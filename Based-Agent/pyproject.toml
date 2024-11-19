@@ -10,6 +10,7 @@ cdp-sdk = "^0.0.2"
 openai = "^1.52.2"
 pytest = "^8.3.3"
 cdp = "^0.0.2"
+python-telegram-bot = "^20.0"
 
 [tool.pyright]
 # https://github.com/microsoft/pyright/blob/main/docs/configuration.md
