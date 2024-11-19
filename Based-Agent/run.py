@@ -1,8 +1,11 @@
 import os
+import time
+import json
 import logging
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from agents import based_agent, create_token, deploy_nft, transfer_asset, get_balance, request_eth_from_faucet, generate_art
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from swarm import Swarm
+from agents import based_agent, generate_art, deploy_nft, create_token, transfer_asset, get_balance, request_eth_from_faucet
 
 # Set up logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -11,76 +14,68 @@ logger = logging.getLogger(__name__)
 # Get the bot token from environment variables
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Command to create a token
-async def create_token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        name = context.args[0]
-        symbol = context.args[1]
-        initial_supply = int(context.args[2])
-        result = create_token(name, symbol, initial_supply)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+# Initialize Swarm client
+client = Swarm()
 
-# Command to deploy an NFT
-async def deploy_nft_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        name = context.args[0]
-        symbol = context.args[1]
-        base_uri = context.args[2]
-        result = deploy_nft(name, symbol, base_uri)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+# Function to process and print streaming response
+def process_and_format_streaming_response(response):
+    content = ""
+    last_sender = ""
+    formatted_response = ""
 
-# Command to transfer assets
-async def transfer_asset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        amount = float(context.args[0])
-        asset_id = context.args[1]
-        destination_address = context.args[2]
-        result = transfer_asset(amount, asset_id, destination_address)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+    for chunk in response:
+        if "sender" in chunk:
+            last_sender = chunk["sender"]
 
-# Command to check balance
-async def get_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        asset_id = context.args[0]
-        result = get_balance(asset_id)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+        if "content" in chunk and chunk["content"] is not None:
+            if not content and last_sender:
+                formatted_response += f"{last_sender}: "
+                last_sender = ""
+            formatted_response += chunk["content"]
+            content += chunk["content"]
 
-# Command to request ETH from faucet
-async def request_eth_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        result = request_eth_from_faucet()
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+        if "tool_calls" in chunk and chunk["tool_calls"] is not None:
+            for tool_call in chunk["tool_calls"]:
+                f = tool_call["function"]
+                name = f["name"]
+                if not name:
+                    continue
+                formatted_response += f"\n{name}()"
 
-# Command to generate art
-async def generate_art_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        prompt = " ".join(context.args)
-        result = generate_art(prompt)
-        await update.message.reply_text(result)
-    except Exception as e:
-        await update.message.reply_text(f"Error: {str(e)}")
+        if "delim" in chunk and chunk["delim"] == "end" and content:
+            formatted_response += "\n"  # End of response message
+            content = ""
+
+        if "response" in chunk:
+            return formatted_response
+
+# Function to handle incoming messages from Telegram
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_message = update.message.text
+    messages = [{"role": "user", "content": user_message}]
+
+    # Log the user's message
+    logger.info(f"User message: {user_message}")
+
+    # Run the agent with the user's message
+    response = client.run(
+        agent=based_agent,
+        messages=messages,
+        stream=True
+    )
+
+    # Process and format the streaming response
+    formatted_response = process_and_format_streaming_response(response)
+
+    # Send the response back to the user
+    await update.message.reply_text(formatted_response)
 
 # Main function to start the bot
 def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Add command handlers
-    application.add_handler(CommandHandler("create_token", create_token_command))
-    application.add_handler(CommandHandler("deploy_nft", deploy_nft_command))
-    application.add_handler(CommandHandler("transfer_asset", transfer_asset_command))
-    application.add_handler(CommandHandler("get_balance", get_balance_command))
-    application.add_handler(CommandHandler("request_eth", request_eth_command))
-    application.add_handler(CommandHandler("generate_art", generate_art_command))
+    # Add message handler for natural language
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Start the bot
     application.run_polling()
